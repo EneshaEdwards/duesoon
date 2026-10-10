@@ -1,4 +1,6 @@
+import json
 import os
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -73,6 +75,29 @@ def build_message(assignment, now):
     return subject, body
 
 
+def send_push(topic, title, message, urgent):
+    """Send a push notification through ntfy. Never raises: email is the main channel."""
+    if not topic:
+        return
+    payload = {
+        "topic": topic,
+        "title": title,
+        "message": message,
+        "priority": 4 if urgent else 3,
+        "tags": ["alarm_clock"],
+    }
+    request = urllib.request.Request(
+        "https://ntfy.sh/",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        urllib.request.urlopen(request, timeout=10).close()
+    except Exception as error:
+        print(f"Push failed: {error}")
+
+
 def lambda_handler(event, context):
     import boto3
     from boto3.dynamodb.conditions import Attr
@@ -81,6 +106,7 @@ def lambda_handler(event, context):
     ses = boto3.client("sesv2")
     sender = os.environ["SENDER"]
     recipient = os.environ["RECIPIENT"]
+    ntfy_topic = os.environ.get("NTFY_TOPIC", "")
     now = datetime.now(timezone.utc)
 
     sent = 0
@@ -105,6 +131,7 @@ def lambda_handler(event, context):
                         }
                     },
                 )
+                send_push(ntfy_topic, subject, body, urgent=(label == "12h"))
                 sent += 1
                 print(f"Sent {label} reminder for {item['assignment_id']}")
 

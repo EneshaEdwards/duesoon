@@ -39,3 +39,47 @@ print(subject)
 print(body)
 assert subject == "Test due in 1 day: Chinese test"
 print("All tests passed")
+
+
+# --- push tests (network is stubbed) ---
+import json as _json
+import urllib.request as _urlreq
+
+import reminder
+
+captured = {}
+
+
+class FakeResponse:
+    def close(self):
+        pass
+
+
+def fake_urlopen(request, timeout=0):
+    captured["url"] = request.full_url
+    captured["body"] = _json.loads(request.data.decode("utf-8"))
+    return FakeResponse()
+
+
+_urlreq.urlopen = fake_urlopen
+reminder.send_push("secret-topic", "Test due in 1 day: 中文 test", "body text", urgent=True)
+assert captured["url"] == "https://ntfy.sh/"
+assert captured["body"]["topic"] == "secret-topic"
+assert captured["body"]["priority"] == 4
+assert "中文" in captured["body"]["title"]
+print("PASS  push payload (including non-English title)")
+
+captured.clear()
+reminder.send_push("", "x", "y", urgent=False)
+assert captured == {}
+print("PASS  no topic -> no push")
+
+
+def broken_urlopen(request, timeout=0):
+    raise OSError("network down")
+
+
+_urlreq.urlopen = broken_urlopen
+reminder.send_push("secret-topic", "x", "y", urgent=False)
+print("PASS  push failure does not crash")
+print("All push tests passed")

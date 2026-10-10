@@ -1,3 +1,10 @@
+variable "ntfy_topic" {
+  type      = string
+  sensitive = true
+}
+
+
+
 variable "sender_email" {
   type = string
 }
@@ -67,6 +74,28 @@ resource "aws_lambda_function" "reminders" {
       TABLE_NAME = aws_dynamodb_table.assignments.name
       SENDER     = var.sender_email
       RECIPIENT  = var.recipient_email
+      NTFY_TOPIC = var.ntfy_topic
     }
   }
 }
+
+
+resource "aws_cloudwatch_event_rule" "hourly" {
+  name                = "duesoon-hourly"
+  description         = "Runs the DueSoon reminder check every hour"
+  schedule_expression = "rate(1 hour)"
+}
+
+resource "aws_cloudwatch_event_target" "reminders" {
+  rule = aws_cloudwatch_event_rule.hourly.name
+  arn  = aws_lambda_function.reminders.arn
+}
+
+resource "aws_lambda_permission" "allow_eventbridge" {
+  statement_id  = "AllowEventBridgeInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.reminders.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.hourly.arn
+}
+
