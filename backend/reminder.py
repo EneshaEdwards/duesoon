@@ -98,6 +98,56 @@ def send_push(topic, title, message, urgent):
         print(f"Push failed: {error}")
 
 
+def send_emails(ses, sender, recipients, subject, body):
+    """Send the email to each recipient separately. Returns how many succeeded.
+
+    One bad address (for example one not verified in the SES sandbox) must not
+    stop the others from getting their reminder.
+    """
+    delivered = 0
+    for address in recipients:
+        try:
+            ses.send_email(
+                FromEmailAddress=sender,
+                Destination={"ToAddresses": [address]},
+                Content={
+                    "Simple": {
+                        "Subject": {"Data": subject},
+                        "Body": {"Text": {"Data": body}},
+                    }
+                },
+            )
+            delivered += 1
+        except Exception as error:
+            print(f"Email to one recipient failed: {error}")
+    return delivered
+
+
+def send_emails(ses, sender, recipients, subject, body):
+    """Send the email to each recipient separately. Returns how many succeeded.
+
+    One bad address (for example one not verified in the SES sandbox) must not
+    stop the others from getting their reminder.
+    """
+    delivered = 0
+    for address in recipients:
+        try:
+            ses.send_email(
+                FromEmailAddress=sender,
+                Destination={"ToAddresses": [address]},
+                Content={
+                    "Simple": {
+                        "Subject": {"Data": subject},
+                        "Body": {"Text": {"Data": body}},
+                    }
+                },
+            )
+            delivered += 1
+        except Exception as error:
+            print(f"Email to one recipient failed: {error}")
+    return delivered
+
+
 def lambda_handler(event, context):
     import boto3
     from boto3.dynamodb.conditions import Attr
@@ -105,7 +155,7 @@ def lambda_handler(event, context):
     table = boto3.resource("dynamodb").Table(os.environ["TABLE_NAME"])
     ses = boto3.client("sesv2")
     sender = os.environ["SENDER"]
-    recipient = os.environ["RECIPIENT"]
+    recipients = [a.strip() for a in os.environ["RECIPIENT"].split(",") if a.strip()]
     ntfy_topic = os.environ.get("NTFY_TOPIC", "")
     now = datetime.now(timezone.utc)
 
@@ -121,19 +171,12 @@ def lambda_handler(event, context):
 
             if label is not None:
                 subject, body = build_message(item, now)
-                ses.send_email(
-                    FromEmailAddress=sender,
-                    Destination={"ToAddresses": [recipient]},
-                    Content={
-                        "Simple": {
-                            "Subject": {"Data": subject},
-                            "Body": {"Text": {"Data": body}},
-                        }
-                    },
-                )
+                delivered = send_emails(ses, sender, recipients, subject, body)
+                if delivered == 0:
+                    raise RuntimeError(f"No email could be sent for {item['assignment_id']}")
                 send_push(ntfy_topic, subject, body, urgent=(label == "12h"))
                 sent += 1
-                print(f"Sent {label} reminder for {item['assignment_id']}")
+                print(f"Sent {label} reminder for {item['assignment_id']} to {delivered} recipient(s)")
 
             table.update_item(
                 Key={"assignment_id": item["assignment_id"]},
@@ -147,3 +190,33 @@ def lambda_handler(event, context):
 
     print(f"Done. Emails sent: {sent}")
     return {"emails_sent": sent}
+
+import reminder
+
+# --- multi-recipient tests ---
+class FakeSes:
+    def __init__(self, bad=()):
+        self.bad = set(bad)
+        self.sent_to = []
+
+    def send_email(self, FromEmailAddress, Destination, Content):
+        address = Destination["ToAddresses"][0]
+        if address in self.bad:
+            raise RuntimeError("MessageRejected: not verified")
+        self.sent_to.append(address)
+
+
+ses = FakeSes()
+assert reminder.send_emails(ses, "from@x.com", ["a@x.com", "b@x.com"], "s", "b") == 2
+assert ses.sent_to == ["a@x.com", "b@x.com"]
+print("PASS  both recipients get their own email")
+
+ses = FakeSes(bad=["b@x.com"])
+assert reminder.send_emails(ses, "from@x.com", ["a@x.com", "b@x.com"], "s", "b") == 1
+assert ses.sent_to == ["a@x.com"]
+print("PASS  one bad address does not block the other")
+
+ses = FakeSes(bad=["a@x.com"])
+assert reminder.send_emails(ses, "from@x.com", ["a@x.com"], "s", "b") == 0
+print("PASS  all failed -> returns 0 (Lambda raises so the alarm fires)")
+print("All multi-recipient tests passed")
